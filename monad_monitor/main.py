@@ -163,6 +163,7 @@ def main():
     # State tracking for each validator
     states: Dict[str, Dict] = {}
     state_machines: Dict[str, ValidatorStateMachine] = {}
+    health_checkers: Dict[str, ValidatorHealthChecker] = {}
 
     # Ensure state directory exists (for Docker volume persistence)
     import os
@@ -221,13 +222,17 @@ def main():
 
                 state = states[validator.name]
                 state_machine = state_machines[validator.name]
-                checker = ValidatorHealthChecker(
-                    validator=validator,
-                    timeout=config["monitoring"].get("timeout", 10),
-                    thresholds=thresholds,
-                    huginn_client=huginn_client,
-                    gmonads_client=gmonads_client,
-                )
+
+                # Get or create health checker (re-use for rate-based CPU calculation)
+                if validator.name not in health_checkers:
+                    health_checkers[validator.name] = ValidatorHealthChecker(
+                        validator=validator,
+                        timeout=config["monitoring"].get("timeout", 10),
+                        thresholds=thresholds,
+                        huginn_client=huginn_client,
+                        gmonads_client=gmonads_client,
+                    )
+                checker = health_checkers[validator.name]
 
                 # Perform health check
                 health_status, current_commits, current_execution_lagging, current_ts_validation_fail = checker.check(

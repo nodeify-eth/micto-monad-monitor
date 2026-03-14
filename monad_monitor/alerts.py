@@ -81,6 +81,7 @@ class AlertHandler:
         message: str,
         parse_mode: str = "Markdown",
         bypass_rate_limit: bool = False,
+        silent: bool = False,
     ) -> bool:
         """Send message via Telegram bot with rate limiting
 
@@ -88,6 +89,7 @@ class AlertHandler:
             message: Message to send
             parse_mode: Telegram parse mode (default: Markdown)
             bypass_rate_limit: If True, skip rate limiting (for CRITICAL alerts)
+            silent: If True, send without notification sound (for periodic reports)
 
         Returns:
             True if message was sent successfully, False otherwise
@@ -107,6 +109,7 @@ class AlertHandler:
             "chat_id": self.telegram_chat_id,
             "text": message,
             "parse_mode": parse_mode,
+            "disable_notification": silent,
         }
 
         try:
@@ -202,6 +205,7 @@ class AlertHandler:
         title: str = "Monad Alert",
         color: int = 0x3498db,  # Blue default
         bypass_rate_limit: bool = False,
+        silent: bool = False,
     ) -> bool:
         """Send message via Discord webhook with rate limiting
 
@@ -210,6 +214,7 @@ class AlertHandler:
             title: Embed title
             color: Embed color (hex int, default blue)
             bypass_rate_limit: If True, skip rate limiting (for CRITICAL alerts)
+            silent: If True, send without notification sound (for periodic reports)
 
         Returns:
             True if message was sent successfully, False otherwise
@@ -225,6 +230,7 @@ class AlertHandler:
                 return False
 
         # Discord embed format for better readability
+        # flags: 1 << 0 = SUPPRESS_NOTIFICATIONS (silent send)
         payload = {
             "embeds": [
                 {
@@ -235,6 +241,10 @@ class AlertHandler:
                 }
             ]
         }
+
+        # Add silent flag if requested
+        if silent:
+            payload["flags"] = 1 << 0  # SUPPRESS_NOTIFICATIONS
 
         try:
             response = requests.post(self.discord_webhook_url, json=payload, timeout=10)

@@ -240,19 +240,19 @@ class HealthReporter:
                         mem_emoji = "🔴" if mem_percent >= 90 else "🟡" if mem_percent >= 80 else "🟢"
                         report_lines.append(f"   {mem_emoji} RAM: {mem_percent:.1f}%")
 
-                    # Disk
-                    disk_percent = sys_metrics.get("disk_percent")
-                    if disk_percent is not None:
-                        disk_emoji = "🔴" if disk_percent >= 90 else "🟡" if disk_percent >= 80 else "🟢"
-                        report_lines.append(f"   {disk_emoji} Disk: {disk_percent:.1f}%")
-
-                    # TrieDB
+                    # TrieDB (MonadDB disk)
                     triedb = sys_metrics.get("triedb", {})
                     if triedb:
                         triedb_percent = triedb.get("used_percent")
                         if triedb_percent is not None:
                             triedb_emoji = "🔴" if triedb_percent >= 80 else "🟡" if triedb_percent >= 60 else "🟢"
                             report_lines.append(f"   {triedb_emoji} TrieDB: {triedb_percent:.1f}%")
+
+                    # OS Disk (root filesystem)
+                    disk_percent = sys_metrics.get("disk_percent")
+                    if disk_percent is not None:
+                        disk_emoji = "🔴" if disk_percent >= 90 else "🟡" if disk_percent >= 80 else "🟢"
+                        report_lines.append(f"   {disk_emoji} OS Disk: {disk_percent:.1f}%")
 
             report_lines.append("")
 
@@ -265,12 +265,14 @@ class HealthReporter:
         ])
 
         report = "\n".join(report_lines)
-        self.alerts.send_telegram(report)
-        # Also send to Discord if configured
+        # Send silently (without notification sound) for periodic reports
+        self.alerts.send_telegram(report, silent=True)
+        # Also send to Discord if configured (silent)
         self.alerts.send_discord(
             message=report.replace("*", "").replace("`", ""),  # Discord doesn't use Markdown
             title="📊 Monad Extended Health Report",
             color=0x2ecc71,  # Green for extended report
+            silent=True,  # Silent send for periodic report
         )
 
     def send_startup_report(

@@ -130,28 +130,69 @@ class MetricsScraper:
             return {}
 
     def _parse_cpu_idle(self, raw: str) -> Optional[float]:
-        """Parse CPU idle percentage from node exporter metrics"""
-        # Get all CPU modes and calculate idle percentage
-        idle_pattern = r'^node_cpu_seconds_total\{.*mode="idle".*\}\s+([\d.]+)'
-        total_pattern = r'^node_cpu_seconds_total\{.*\}\s+([\d.]+)'
+        """Parse CPU idle percentage from node exporter metrics
 
-        idle_matches = re.findall(idle_pattern, raw, re.MULTILINE)
-        total_matches = re.findall(total_pattern, raw, re.MULTILINE)
+        Uses cumulative ratio calculation (same as 'top' command).
+        This matches the query: 100 * avg by (instance) (1 - rate(node_cpu_seconds_total{mode="idle"}[5m]))
 
-        if idle_matches and total_matches:
-            total_idle = sum(float(m) for m in idle_matches)
-            total_all = sum(float(m) for m in total_matches)
-            if total_all > 0:
-                return (total_idle / total_all) * 100
+        For cumulative counters like node_cpu_seconds_total, we use the ratio
+        of idle time to total time, which gives us average CPU usage over uptime.
+
+        Returns:
+            Idle percentage (100 = 100% idle, 0 = 100% CPU usage)
+        """
+        # Pattern to match all CPU metrics with cpu number and mode
+        cpu_pattern = r'^node_cpu_seconds_total\{cpu="(\d+)",mode="([^"]+)"\}\s+([\d.e+-]+)'
+
+        # Parse all CPU metrics and sum across all cores and all modes
+        total_idle = 0.0
+        total_user = 0.0
+        total_system = 0.0
+        total_nice = 0.0
+        total_iowait = 0.0
+        total_irq = 0.0
+        total_softirq = 0.0
+        total_steal = 0.0
+
+        for match in re.finditer(cpu_pattern, raw, re.MULTILINE):
+            mode = match.group(2)
+            value = float(match.group(3))
+
+            # Sum all cores for each mode (matches 'top' calculation)
+            if mode == "idle":
+                total_idle += value
+            elif mode == "user":
+                total_user += value
+            elif mode == "system":
+                total_system += value
+            elif mode == "nice":
+                total_nice += value
+            elif mode == "iowait":
+                total_iowait += value
+            elif mode == "irq":
+                total_irq += value
+            elif mode == "softirq":
+                total_softirq += value
+            elif mode == "steal":
+                total_steal += value
+
+        # Calculate total time across all modes (all cores, all modes)
+        total_time = (total_idle + total_user + total_system + total_nice +
+                      total_iowait + total_irq + total_softirq + total_steal)
+
+        if total_time > 0:
+            # Return idle percentage (CPU used = 100 - idle)
+            return (total_idle / total_time) * 100
+
         return None
 
     def _parse_disk_metrics(self, raw: str) -> Dict:
         """Parse disk usage metrics from node exporter"""
         result = {}
 
-        # Look for root filesystem metrics
-        avail_pattern = r'^node_filesystem_avail_bytes\{.*mount="/".*\}\s+([\d.]+)'
-        size_pattern = r'^node_filesystem_size_bytes\{.*mount="/".*\}\s+([\d.]+)'
+        # Look for root filesystem metrics (mountpoint="/")
+        avail_pattern = r'^node_filesystem_avail_bytes\{[^}]*mountpoint="/"[^}]*\}\s+([\d.e+-]+)'
+        size_pattern = r'^node_filesystem_size_bytes\{[^}]*mountpoint="/"[^}]*\}\s+([\d.e+-]+)'
 
         avail_match = re.search(avail_pattern, raw, re.MULTILINE)
         size_match = re.search(size_pattern, raw, re.MULTILINE)
