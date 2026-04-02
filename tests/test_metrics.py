@@ -167,6 +167,32 @@ class TestMetricsScraper:
 
         assert result == 12345.0
 
+    def test_parse_metric_multi_version_picks_latest_timestamp(self, metrics_scraper):
+        """Test that when multiple time series exist (e.g., service_version labels),
+        the value with the highest Prometheus timestamp is returned."""
+        metrics_text = """monad_execution_ledger_num_commits{service_version="0.13.0"} 6.030699e+06 1775142037800
+monad_execution_ledger_num_commits{service_version="0.14.0"} 3906 1775143628963"""
+        result = metrics_scraper.parse_metric(metrics_text, "monad_execution_ledger_num_commits")
+
+        # Should return 3906 (0.14.0 with higher timestamp), not 6.030699e+06 (stale 0.13.0)
+        assert result == 3906.0
+
+    def test_parse_metric_single_version_unchanged(self, metrics_scraper):
+        """Test that single-metric parsing still works as before (backward compat)"""
+        metrics_text = "monad_execution_ledger_num_commits 12345"
+        result = metrics_scraper.parse_metric(metrics_text, "monad_execution_ledger_num_commits")
+
+        assert result == 12345.0
+
+    def test_parse_metric_multi_version_no_timestamp_picks_last(self, metrics_scraper):
+        """Test that when multiple matches have no timestamps, last match is used"""
+        metrics_text = """monad_test_metric{version="old"} 100
+monad_test_metric{version="new"} 200"""
+        result = metrics_scraper.parse_metric(metrics_text, "monad_test_metric")
+
+        # Both have timestamp=0, max returns first found with same key
+        assert result in (100.0, 200.0)
+
     def test_get_monad_metrics_returns_dict(self, sample_validator_config):
         """Test get_monad_metrics returns dictionary"""
         with responses.RequestsMock() as rsps:

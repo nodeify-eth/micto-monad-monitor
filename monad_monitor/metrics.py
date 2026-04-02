@@ -33,21 +33,37 @@ class MetricsScraper:
             return None
 
     def parse_metric(self, metrics_text: str, metric_name: str) -> Optional[float]:
-        """Parse a single metric value from Prometheus text format"""
-        # Pattern matches: metric_name{...} value or metric_name value
-        # Supports: integers, decimals, scientific notation (e.g., 1.4896736e+07), NaN, -Inf, +Inf
-        # Numeric pattern: optional sign, digits with optional decimal, optional exponent part
-        numeric_pattern = r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
-        pattern = rf"^{metric_name}(?:\{{[^}}]*\}})?\s+({numeric_pattern}|NaN|-Inf|\+Inf)"
-        match = re.search(pattern, metrics_text, re.MULTILINE)
+        """Parse a single metric value from Prometheus text format.
 
-        if match:
-            value = match.group(1)
-            # Handle special Prometheus values
-            if value in ("NaN", "-Inf", "+Inf"):
-                return None
-            return float(value)
-        return None
+        Handles multiple time series with the same metric name but different labels
+        (e.g., service_version="0.13.0" and "0.14.0" after a network upgrade).
+        When multiple matches exist, returns the value with the highest Prometheus timestamp.
+        Falls back to the last match if no timestamps are present.
+        """
+        # Pattern matches: metric_name{...} value [timestamp]
+        # Supports: integers, decimals, scientific notation (e.g., 1.4896736e+07), NaN, -Inf, +Inf
+        numeric_pattern = r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
+        pattern = rf"^{metric_name}(?:\{{[^}}]*\}})?\s+({numeric_pattern}|NaN|-Inf|\+Inf)(?:\s+(\d+))?"
+        matches = list(re.finditer(pattern, metrics_text, re.MULTILINE))
+
+        if not matches:
+            return None
+
+        if len(matches) == 1:
+            value = matches[0].group(1)
+        else:
+            # Multiple time series — pick the one with the highest timestamp (most recent)
+            best = max(matches, key=lambda m: int(m.group(2)) if m.group(2) else 0)
+            value = best.group(1)
+            logger.debug(
+                f"Multiple time series for '{metric_name}' ({len(matches)} matches), "
+                f"using latest timestamp"
+            )
+
+        # Handle special Prometheus values
+        if value in ("NaN", "-Inf", "+Inf"):
+            return None
+        return float(value)
 
     def get_monad_metrics(self) -> Dict:
         """Fetch Monad-specific metrics from validator"""
