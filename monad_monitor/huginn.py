@@ -86,7 +86,7 @@ class ValidatorUptime:
     validator_id: Optional[int]
     validator_name: Optional[str]
     secp_address: str
-    is_active: bool  # Currently in active set (based on round difference)
+    is_active: bool  # Currently in active set (from API status field, round difference fallback)
     is_ever_active: bool  # Has ever been in active set (total_events > 0)
     uptime_percent: float
     finalized_count: int
@@ -565,28 +565,34 @@ class HuginnClient:
         else:
             uptime_percent = 0.0
 
-        # Determine active set status based on round difference
-        # Season 5.2: Safer fallback logic with confidence indicator
+        # Determine active set status
+        # Primary: Use API's "status" field directly (most reliable)
+        # Fallback: Calculate from round difference (when status unavailable)
         validator_last_round = data.get("last_round")
         round_diff = None
         is_active = False
         confidence = "high"  # Default to high confidence
 
-        if current_network_round is not None and validator_last_round is not None:
+        api_status = data.get("status")
+        if api_status is not None:
+            # API provides status directly — use it as primary source
+            is_active = api_status == "active"
+            confidence = "high"
+            # Still calculate round_diff for informational purposes
+            if current_network_round is not None and validator_last_round is not None:
+                round_diff = current_network_round - validator_last_round
+        elif current_network_round is not None and validator_last_round is not None:
+            # Fallback: calculate from round difference when status not in response
             round_diff = current_network_round - validator_last_round
-            # Active if within threshold
             is_active = round_diff <= ACTIVE_SET_ROUND_THRESHOLD
-            # Confidence based on whether we used cached round
             confidence = "medium" if used_cached_round else "high"
         elif is_ever_active:
-            # Season 5.2 Fix: When network round is unavailable, do NOT assume active
-            # Use conservative default with unknown confidence
-            # This prevents false "active" status when we can't verify
+            # No status field and no network round — cannot determine
             is_active = False
             confidence = "unknown"
             self._logger.debug(
                 f"Cannot determine active status for {secp_address[:16]}... "
-                f"(no network round available, is_ever_active={is_ever_active})"
+                f"(no status field and no network round available)"
             )
 
         return ValidatorUptime(

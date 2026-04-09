@@ -12,6 +12,7 @@ SAMPLE_ACTIVE_VALIDATOR_RESPONSE = {
     "validator_id": 42,
     "validator_name": "Test Validator",
     "secp_address": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    "status": "active",
     "finalized_count": 1500,
     "timeout_count": 0,
     "total_events": 1500,
@@ -24,9 +25,10 @@ SAMPLE_INACTIVE_VALIDATOR_RESPONSE = {
     "validator_id": None,
     "validator_name": None,
     "secp_address": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef",
+    "status": "inactive",
     "finalized_count": 0,
     "timeout_count": 0,
-    "total_events": 0,  # Zero events = inactive
+    "total_events": 0,
     "last_round": None,
     "last_block_height": None,
     "since_utc": None,
@@ -851,13 +853,13 @@ class TestIsActiveFallbackSafety:
         """Create HuginnClient for testing"""
         return HuginnClient(config=HuginnConfig())
 
-    def test_unknown_active_status_when_no_network_round(self, client):
-        """When network round unavailable, confidence should be 'unknown' not assumed active"""
+    def test_unknown_active_status_when_no_network_round_and_no_status(self, client):
+        """When status field missing and network round unavailable, should not assume active"""
         secp = "0xunknownstatus"
         client._circuit_breakers.clear()
 
         with responses.RequestsMock(assert_all_requests_are_fired=False) as rsps:
-            # All reference validators fail with 404 (not retried, doesn't trigger circuit breaker)
+            # All reference validators fail with 404
             for ref_id in range(1, 6):
                 rsps.add(
                     responses.GET,
@@ -866,13 +868,22 @@ class TestIsActiveFallbackSafety:
                     status=404,
                 )
 
-            # No cached network round
-
-            # Mock target validator that has been active before
+            # Mock target validator WITHOUT status field (old API or edge case)
             rsps.add(
                 responses.GET,
                 f"{TESTNET_API}/validator/uptime/{secp}",
-                json={**SAMPLE_ACTIVE_VALIDATOR_RESPONSE, "total_events": 100},
+                json={
+                    "validator_id": 99,
+                    "validator_name": "No Status Val",
+                    "secp_address": secp,
+                    # No "status" field
+                    "finalized_count": 50,
+                    "timeout_count": 0,
+                    "total_events": 100,
+                    "last_round": None,
+                    "last_block_height": None,
+                    "since_utc": "2024-01-01T00:00:00Z",
+                },
                 status=200,
             )
 
@@ -880,9 +891,9 @@ class TestIsActiveFallbackSafety:
 
             assert result is not None
             assert result.is_ever_active is True
-            # When network round is unavailable, should NOT assume active
-            assert result.is_active is False  # Conservative default
-            assert result.confidence == "unknown"  # Indicates uncertainty
+            # No status field + no network round = conservative False
+            assert result.is_active is False
+            assert result.confidence == "unknown"
             assert result.round_diff is None
 
     def test_high_confidence_when_round_available(self, client):
@@ -908,7 +919,7 @@ class TestIsActiveFallbackSafety:
             assert result.round_diff == 10
 
     def test_uses_cached_round_with_medium_confidence(self, client):
-        """When using cached round, confidence should be 'medium'"""
+        """When status field missing and using cached round, confidence should be 'medium'"""
         secp = "0xcachedconf"
         client._circuit_breakers.clear()
 
@@ -926,10 +937,22 @@ class TestIsActiveFallbackSafety:
                     status=500,
                 )
 
+            # Mock target validator WITHOUT status field — force round-based fallback
             rsps.add(
                 responses.GET,
                 f"{TESTNET_API}/validator/uptime/{secp}",
-                json={**SAMPLE_ACTIVE_VALIDATOR_RESPONSE, "last_round": 1990},
+                json={
+                    "validator_id": 88,
+                    "validator_name": "Cached Round Val",
+                    "secp_address": secp,
+                    # No "status" field — falls back to round difference
+                    "finalized_count": 100,
+                    "timeout_count": 0,
+                    "total_events": 100,
+                    "last_round": 1990,
+                    "last_block_height": 12345678,
+                    "since_utc": "2024-01-01T00:00:00Z",
+                },
                 status=200,
             )
 
@@ -937,5 +960,5 @@ class TestIsActiveFallbackSafety:
 
             assert result is not None
             assert result.current_network_round == 2000  # From cache
-            assert result.confidence == "medium"  # Cached data
-            assert result.is_active is True  # Can determine from cached round
+            assert result.confidence == "medium"  # Cached round fallback
+            assert result.is_active is True  # round_diff = 10, within threshold
