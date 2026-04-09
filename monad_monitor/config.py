@@ -73,6 +73,13 @@ def load_config() -> Dict[str, Any]:
         "DISCORD_WEBHOOK_URL", config["discord"].get("webhook_url", "")
     )
 
+    # Slack webhook (optional)
+    if "slack" not in config:
+        config["slack"] = {}
+    config["slack"]["webhook_url"] = os.getenv(
+        "SLACK_WEBHOOK_URL", config["slack"].get("webhook_url", "")
+    )
+
     return config
 
 
