@@ -68,10 +68,12 @@ nano .env
 nano config/validators.yaml
 nano config/config.yaml
 
-# 4. Start
+# 4. Start (uses pre-built image from GHCR)
 docker compose up -d
 docker compose logs -f
 ```
+
+> **Want to build from source?** Uncomment `build: .` and comment out the `image:` line in `docker-compose.yaml`, then run `docker compose up -d --build`.
 
 You should get a **"Monad Monitor Started"** message on your configured alert channel(s).
 
@@ -221,6 +223,8 @@ cp config/config.example.yaml config/config.yaml
 cp config/validators.example.yaml config/validators.yaml
 cp .env.example .env
 ```
+
+> **Want to build from source?** Uncomment `build: .` and comment out the `image:` line in `docker-compose.yaml`, then run `docker compose up -d --build`.
 
 #### 4.1 Edit `.env` - Your Credentials
 
@@ -520,7 +524,8 @@ micto-monad-monitor/
 ## Support
 
 - **Issues:** [GitHub Issues](https://github.com/MictoNode/micto-monad-monitor/issues)
-- **Updates:** `git pull && docker compose up -d --build`
+- **Updates (pre-built):** `docker compose pull && docker compose up -d`
+- **Updates (build from source):** `git pull && docker compose up -d --build`
 
 ---
 
