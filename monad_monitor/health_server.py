@@ -1,13 +1,21 @@
 """Lightweight HTTP Health Server for monitoring the monitor"""
 
 import json
+import logging
 import time
 import threading
 from dataclasses import dataclass, field
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Dict, Any, Optional
 
 from .version_check import detect_version
+
+logger = logging.getLogger(__name__)
+
+# How long a client may keep a connection open without completing a request
+# (or without reading our response) before the socket times out. Bounds a
+# stalled connection to one thread for seconds instead of forever.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 
 
 # A /health read is stale when the monitor loop has not ticked for this long.
@@ -77,6 +85,11 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
     # Class-level reference to health server (set by HealthServer)
     health_server: Optional["HealthServer"] = None
 
+    def setup(self):
+        """Apply the server's per-connection timeout before the request is read"""
+        self.timeout = getattr(self.server, "request_timeout", None)
+        super().setup()
+
     def log_message(self, format, *args):
         """Suppress default logging (or redirect to custom logger)"""
         pass  # Silent by default
@@ -108,7 +121,17 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
-        """Handle GET requests"""
+        """Handle GET requests; an error ends this request, not the server"""
+        try:
+            self._dispatch_get()
+        except Exception:
+            logger.exception("Unhandled error while serving %s", self.path)
+            try:
+                self._send_json_response({"error": "Internal server error"}, 500)
+            except Exception:
+                pass  # Client already gone; nothing left to tell it
+
+    def _dispatch_get(self):
         if self.health_server is None:
             self._send_json_response({"error": "Server not initialized"}, 500)
             return
@@ -179,6 +202,20 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
         self._send_text_response("\n".join(lines) + "\n", 200)
 
 
+class HealthHTTPServer(ThreadingHTTPServer):
+    """Threaded health server: a slow client cannot block the accept loop.
+
+    The stdlib default is a single-threaded HTTPServer with an accept backlog of
+    5. One client that connects and never finishes its request parks the only
+    handler thread, the backlog fills with half-open connections, and every
+    later healthcheck (including the Docker one) times out.
+    """
+
+    daemon_threads = True
+    # Absorb short bursts of concurrent probes without dropping SYNs.
+    request_queue_size = 64
+
+
 class HealthServer:
     """
     Lightweight HTTP server for health checks.
@@ -203,15 +240,17 @@ class HealthServer:
         host: str = "0.0.0.0",
         port: int = 8080,
         staleness_threshold: float = DEFAULT_STALENESS_THRESHOLD_SECONDS,
+        request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ):
         self.host = host
         self.port = port
+        self.request_timeout = request_timeout
         self._status = HealthStatus(
             last_check=time.time(),  # grace until the first loop tick
             staleness_threshold=staleness_threshold,
         )
         self._lock = threading.Lock()
-        self._server: Optional[HTTPServer] = None
+        self._server: Optional[HealthHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
@@ -222,7 +261,9 @@ class HealthServer:
         # Set up handler with reference to this server
         HealthRequestHandler.health_server = self
 
-        self._server = HTTPServer((self.host, self.port), HealthRequestHandler)
+        self._server = HealthHTTPServer((self.host, self.port), HealthRequestHandler)
+        # Read by HealthRequestHandler.setup() for each accepted connection.
+        self._server.request_timeout = self.request_timeout
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
@@ -230,6 +271,11 @@ class HealthServer:
         """Stop the health server"""
         if self._server is not None:
             self._server.shutdown()
+            # Close the listening socket now: handler threads keep a reference
+            # to the server object, so without this the port stays bound until
+            # the last stalled connection times out and a restart fails with
+            # "address already in use".
+            self._server.server_close()
             self._server = None
             self._thread = None
 

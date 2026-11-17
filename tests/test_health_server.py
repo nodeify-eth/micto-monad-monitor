@@ -396,3 +396,76 @@ class TestUpdateStatusIsolation:
 
         served = server.get_health_status().to_dict()
         assert served["alerts"]["telegram"]["sent"] == 1
+
+
+class TestSlowClients:
+    """A slow or silent client must never take /health down.
+
+    Regression for the reported failure: one connection that never completes
+    its request blocked the single-threaded server, the accept backlog (5)
+    filled with half-open connections, and the Docker healthcheck started
+    timing out while the monitor loop and the other dashboards stayed fine.
+    """
+
+    def test_stalled_client_does_not_block_health(self):
+        server = HealthServer(port=_free_port(), request_timeout=5.0)
+        server.start()
+        stalled = []
+        try:
+            for _ in range(3):
+                sock = socket.create_connection(("127.0.0.1", server.port), timeout=2)
+                # Request line + partial headers, never terminated: the handler
+                # would otherwise sit in readline() forever.
+                sock.sendall(b"GET /health HTTP/1.1\r\nHost: localhost\r\n")
+                stalled.append(sock)
+
+            time.sleep(0.2)
+            url = f"http://127.0.0.1:{server.port}/health"
+            with urllib.request.urlopen(url, timeout=3) as response:
+                assert response.status == 200
+                assert json.loads(response.read())["freshness"] == "ok"
+        finally:
+            for sock in stalled:
+                sock.close()
+            server.stop()
+
+    def test_idle_connection_is_closed_after_request_timeout(self):
+        server = HealthServer(port=_free_port(), request_timeout=0.3)
+        server.start()
+        sock = socket.create_connection(("127.0.0.1", server.port), timeout=2)
+        try:
+            sock.settimeout(0.05)
+            deadline = time.time() + 5
+            closed = False
+            while time.time() < deadline:
+                try:
+                    if sock.recv(1) == b"":
+                        closed = True
+                        break
+                except socket.timeout:
+                    continue
+            assert closed, "server kept an idle connection open past its timeout"
+        finally:
+            sock.close()
+            server.stop()
+
+    def test_stop_releases_the_port_while_a_client_is_stalled(self):
+        """stop() must close the listener, not wait for stalled handler threads"""
+        port = _free_port()
+        server = HealthServer(port=port, request_timeout=2.0)
+        server.start()
+        sock = socket.create_connection(("127.0.0.1", port), timeout=2)
+        try:
+            sock.sendall(b"GET /health HTTP/1.1\r\nHost: localhost\r\n")
+            time.sleep(0.1)  # let a handler pick the connection up
+        finally:
+            server.stop()
+            sock.close()
+
+        replacement = HealthServer(port=port, request_timeout=2.0)
+        replacement.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/live", timeout=3) as response:
+                assert response.status == 200
+        finally:
+            replacement.stop()
